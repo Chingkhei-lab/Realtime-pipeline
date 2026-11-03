@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: analytics
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pipeline -d analytics"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The runner's Postgres service is on 5432 (the 5433 remap is only for local Docker Compose)
+      DATABASE_URL: postgresql://pipeline:pipeline@localhost:5432/analytics
+      PGPASSWORD: pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Create schema
+        run: psql -h localhost -U pipeline -d analytics -f sql/init.sql
+
+      - name: Run tests
+        run: python -m pytest -v
