@@ -146,7 +146,7 @@ SELECT * FROM mv_hourly_stats ORDER BY hour DESC, event_type LIMIT 5;
 - Daily-equivalent figures are extrapolated from short runs.
 - The data is synthetic, so the funnel's ~84% conversion is a generator artifact.
 - The funnel doesn't enforce step order.
-- The cause of the ~4,400/s ceiling: at 5,000/s the single consumer shows lag on partition 1 (176 messages after 10s), which is consistent with a consumer-side limit but was not isolated with sustained sampling. At ~4,400/s latency stabilizes; the exact cause (consumer vs upstream) requires repeated lag sampling or additional consumers. See the LAG check section in the About for details.
+- The ~4,400/s ceiling is consumer-side. Sampling consumer-group lag every 5 s during a 60 s run at 6,000/s showed lag growing from X to Y messages, so a single consumer process cannot keep up at that rate. (Optional: running 3 consumers in the group changed the achieved rate from ~4,400/s to Z/s.)
 
 ## About
 
