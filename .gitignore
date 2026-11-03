@@ -1,0 +1,11 @@
+# local secrets
+.env
+
+# local logs / test artefacts
+logs/
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/

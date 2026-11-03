@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+aiokafka
+pydantic>=2
+pydantic-settings
+asyncpg
+python-dotenv
+httpx
+pytest
+pytest-asyncio
