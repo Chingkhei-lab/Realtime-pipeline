@@ -146,7 +146,7 @@ SELECT * FROM mv_hourly_stats ORDER BY hour DESC, event_type LIMIT 5;
 - Daily-equivalent figures are extrapolated from short runs.
 - The data is synthetic, so the funnel's ~84% conversion is a generator artifact.
 - The funnel doesn't enforce step order.
-- The cause of the ~4,400/s ceiling: at 5,000/s the single consumer falls behind on partition 1 (176-message lag after 10s), confirming the consumer is the bottleneck. At ~4,400/s the lag stabilizes and p95 flattens. This was verified with kafka-consumer-groups.sh --describe during a 5,000/s load gen run.
+- The cause of the ~4,400/s ceiling: at 5,000/s the single consumer shows lag on partition 1 (176 messages after 10s), which is consistent with a consumer-side limit but was not isolated with sustained sampling. At ~4,400/s latency stabilizes; the exact cause (consumer vs upstream) requires repeated lag sampling or additional consumers. See the LAG check section in the About for details.
 
 ## About
 
