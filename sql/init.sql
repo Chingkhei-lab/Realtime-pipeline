@@ -1,3 +1,6 @@
+-- schema init
+-- tables, enums, etc.
+
 CREATE TABLE IF NOT EXISTS events (
     event_id     UUID PRIMARY KEY,
     event_type   TEXT        NOT NULL,

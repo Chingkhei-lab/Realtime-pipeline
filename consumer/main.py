@@ -13,7 +13,7 @@ logger = logging.getLogger("consumer")
 logging.basicConfig(level=logging.INFO)
 
 GROUP_ID = "event-writers"
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 
 # Errors that mean "the database is unavailable", not "this data is bad"
 TRANSIENT = (
@@ -126,7 +126,7 @@ async def process_batch(pool, dlq, messages) -> None:
 
 
 async def main() -> None:
-    pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+    pool = await asyncpg.create_pool(settings.database_url, min_size=3, max_size=15)
     dlq = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers, acks="all")
     consumer = AIOKafkaConsumer(
         settings.raw_topic,
