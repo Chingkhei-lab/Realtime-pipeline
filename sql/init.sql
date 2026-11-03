@@ -1,5 +1,5 @@
 -- schema init
--- tables, enums, etc.
+-- Events table: event_id PRIMARY KEY makes writes idempotent
 
 CREATE TABLE IF NOT EXISTS events (
     event_id     UUID PRIMARY KEY,

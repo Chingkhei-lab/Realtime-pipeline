@@ -1,7 +1,8 @@
 # realtime-pipeline
 
 A small event-ingestion pipeline: FastAPI accepts events, Kafka buffers them, and an
-async consumer writes them to Postgres exactly once.
+async consumer writes them to Postgres with exactly-once effect (at-least-once delivery
+plus idempotent writes via `ON CONFLICT DO NOTHING` and the UUID primary key).
 
 ```mermaid
 flowchart LR
@@ -55,11 +56,11 @@ Run the two processes in separate terminals:
 
 ## Guarantees
 
-- **Exactly once into `events`.** The consumer disables auto-commit and commits Kafka
-  offsets only after the DB transaction returns. A crash mid-batch replays the batch,
-  and `ON CONFLICT (event_id) DO NOTHING` plus the UUID primary key makes the replay a
-  no-op. Verified: killing the consumer with 2000 uncommitted events left
-  `count(*) = count(DISTINCT event_id)`.
+- **Exactly-once effect (at-least-once delivery plus idempotent writes).** The consumer
+  disables auto-commit and commits Kafka offsets only after the DB transaction returns. A
+  crash mid-batch replays the batch, and `ON CONFLICT (event_id) DO NOTHING` plus the
+  UUID primary key makes the replay a no-op. Verified: killing the consumer with 2000
+  uncommitted events left `count(*) = count(DISTINCT event_id)`.
 - **At least once into `events.dlq`.** The DLQ send happens before the offset commit, so
   a crash in between re-sends the message on replay.
 - **Transient vs permanent failures.** Connection errors and timeouts are retried 10
@@ -97,7 +98,7 @@ co-located. Load generator: `scripts/load_gen.py`, latency report:
 | 7 | 5000/s | 4994/s | 3.22s | 6.04s | 6.60s | 7.04s | PASS | 395.2M |
 | 8 | 6000/s | 4434/s | 11.51s | 22.34s | 22.93s | 24.07s | PASS | 375.5M |
 
-**Sustainable claim**: ~4,000 events/s with p95 < 1s (the numbers you can put on a resume).
+**Sustainable rate**: ~4,000 events/s with p95 < 1 s.
 **Headroom**: 5M events/day ≈ 58/s → system handles 4,000/s = **68× headroom**.
 **Breakdown**: 5,000+ events/s — latency degrades, achieved rate caps at ~4,400/s.
 **Exactly-once guarantee**: PASS at all rates (0 lost, 0 dupes), even under duplicates,
@@ -107,6 +108,7 @@ outages, and hard kills.
 |--------|----------------------------------|----------------------------------|
 | Cold read | 5.48 s | 6.6 ms |
 | Warm read | 5.53 s | 4.0 ms |
+| Index | `idx_events_run` on `properties->>'run_id'` (see `sql/benchmark.sql`) | n/a |
 | Work done | `GROUP BY` + `count(DISTINCT user_id)` over 1,822,514 rows | read a handful of pre-aggregated rows |
 | Refresh cost | n/a | 12.3 s (`REFRESH ... CONCURRENTLY`) |
 | Speedup | baseline | ~830x cold / ~1,380x warm |
@@ -124,17 +126,70 @@ FROM events GROUP BY 1, 2 ORDER BY 1 DESC, 2 LIMIT 5;
 SELECT * FROM mv_hourly_stats ORDER BY hour DESC, event_type LIMIT 5;
 ```
 
-*Plain views are always fresh but scan the raw table. Materialized views are fast but
-stale until refreshed, so they are refreshed on a schedule. `CONCURRENTLY` avoids
-blocking dashboard queries. Query A is CPU-bound (hashing for `count(DISTINCT)`),
-not disk-bound, so its cold and warm times are nearly identical and the gap is not
-a caching artifact. The ratio depends on table size (1,822,514 rows here). Refreshing
-costs ~12.3 s, about two reads of query A, so the tradeoff only pays off when
-dashboards are queried far more often than the view is refreshed. Use
-`ORDER BY hour DESC, event_type` on both sides to avoid tie-break differences.*
+- Plain views are always fresh but scan the raw table. Materialized views are fast but
+  stale until refreshed, so they are refreshed on a schedule. `CONCURRENTLY` avoids
+  blocking dashboard queries.
+- Query A is CPU-bound (hashing for `count(DISTINCT)`), not disk-bound, so its cold and
+  warm times are nearly identical and the gap is not a caching artifact.
+- The ratio depends on table size (1,822,514 rows here).
+- Refreshing costs ~12.3 s, about two reads of query A, so the tradeoff only pays off
+  when dashboards are queried far more often than the view is refreshed.
+- Use `ORDER BY hour DESC, event_type` on both sides to avoid tie-break differences.
 
 ### Caveats
+
 - Single-laptop co-location is conservative; production partitioning and connection
-pooling will shift these numbers.
+  pooling will shift these numbers.
 - At real production volumes you'd partition events by day and aggregate incrementally,
   instead of re-scanning the whole table.
+- Run 8 was overloaded, so it isn't a sustained rate.
+- Daily-equivalent figures are extrapolated from short runs.
+- The data is synthetic, so the funnel's ~84% conversion is a generator artifact.
+- The funnel doesn't enforce step order.
+- The cause of the ~4,400/s ceiling hasn't been isolated (see the LAG check below).
+
+## About
+
+A real-time event ingestion pipeline: FastAPI accepts events, Kafka buffers them, and an
+async consumer writes them to Postgres with exactly-once effect (at-least-once delivery
+plus idempotent writes via `ON CONFLICT DO NOTHING` and the UUID primary key).
+
+## Topics
+
+kafka, fastapi, postgresql, data-engineering, exactly-once
+
+## License
+
+MIT
+
+## CI
+
+```yaml
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pipeline
+          POSTGRES_PASSWORD: pipeline
+          POSTGRES_DB: analytics
+        ports: [5432:5432]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: .venv/Scripts/python -m pytest -v
+```
