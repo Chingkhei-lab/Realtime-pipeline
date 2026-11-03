@@ -67,17 +67,21 @@ async def test_batch_is_inserted(pool, run_id):
 async def test_duplicates_inside_one_batch_are_skipped(pool, run_id):
     eid = uuid.uuid4()
     msgs = [make_msg(run_id, eid) for _ in range(5)]
-    await process_batch(pool, FakeDLQ(), msgs)
+    dlq = FakeDLQ()
+    await process_batch(pool, dlq, msgs)
     assert await count(pool, run_id) == 1
+    assert dlq.sent == []          # duplicates are skipped silently, not rejected
 
 
 async def test_replay_inserts_nothing_new(pool, run_id):
     """Simulates: DB commit succeeded, crash before offset commit, Kafka redelivers."""
     msgs = [make_msg(run_id) for _ in range(100)]
-    await process_batch(pool, FakeDLQ(), msgs)
-    await process_batch(pool, FakeDLQ(), msgs)  # redelivery
-    await process_batch(pool, FakeDLQ(), msgs)  # and again
+    dlq = FakeDLQ()
+    await process_batch(pool, dlq, msgs)
+    await process_batch(pool, dlq, msgs)  # redelivery
+    await process_batch(pool, dlq, msgs)  # and again
     assert await count(pool, run_id) == 100
+    assert dlq.sent == []
 
 
 async def test_malformed_message_goes_to_dlq(pool, run_id):

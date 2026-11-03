@@ -3,6 +3,15 @@
 A small event-ingestion pipeline: FastAPI accepts events, Kafka buffers them, and an
 async consumer writes them to Postgres exactly once.
 
+```mermaid
+flowchart LR
+    client[Client] --> api[FastAPI :8000]
+    api --> kafka[Kafka events.raw]
+    kafka --> consumer[Consumer]
+    consumer --> pg[(Postgres :5433\nevents)]
+    consumer --> dlq[Kafka events.dlq\nbad rows]
+```
+
 ```
 client -> FastAPI (:8000) -> Kafka events.raw -> consumer -> Postgres (:5433)
                                                    |
@@ -60,6 +69,17 @@ Run the two processes in separate terminals:
   goes to the DLQ with its `source_partition` / `source_offset`, and the rest commit.
   A poison message therefore cannot wedge the pipeline.
 
+## Tests
+
+```bash
+.venv/Scripts/python -m pytest -v   # 20 passed
+```
+
+The consumer tests include a mutation check for idempotency: removing
+`ON CONFLICT (event_id) DO NOTHING` makes two tests fail because duplicates are
+diverted to the DLQ as `UniqueViolationError`, proving the clause is what makes
+replay a no-op.
+
 ## Benchmarks
 
 All numbers on a single laptop (8 GB RAM) with API, Kafka, consumer, and Postgres
@@ -83,15 +103,35 @@ co-located. Load generator: `scripts/load_gen.py`, latency report:
 **Exactly-once guarantee**: PASS at all rates (0 lost, 0 dupes), even under duplicates,
 outages, and hard kills.
 
-| Metric | Plain view | Materialized view |
-|--------|------------|-------------------|
-| `v_conversion_funnel` (10k rows) | ~10s | ~3 ms |
-| Scan behaviour | Always fresh, scans raw table | Fast but stale until refreshed |
-| Refresh strategy | N/A | `REFRESH MATERIALIZED VIEW CONCURRENTLY` (non-blocking) |
+| Metric | Query A: aggregate raw `events` | Query B: read `mv_hourly_stats` |
+|--------|----------------------------------|----------------------------------|
+| Cold read | 5.48 s | 6.6 ms |
+| Warm read | 5.53 s | 4.0 ms |
+| Work done | `GROUP BY` + `count(DISTINCT user_id)` over 1,822,514 rows | read a handful of pre-aggregated rows |
+| Refresh cost | n/a | 12.3 s (`REFRESH ... CONCURRENTLY`) |
+| Speedup | baseline | ~830x cold / ~1,380x warm |
+
+Same logical question on both sides (so the only difference is where the work
+happens):
+
+```sql
+-- A: compute from raw events
+SELECT date_trunc('hour', event_ts) AS hour, event_type,
+       count(*) AS events, count(DISTINCT user_id) AS users
+FROM events GROUP BY 1, 2 ORDER BY 1 DESC, 2 LIMIT 5;
+
+-- B: read the precomputed answer
+SELECT * FROM mv_hourly_stats ORDER BY hour DESC, event_type LIMIT 5;
+```
 
 *Plain views are always fresh but scan the raw table. Materialized views are fast but
 stale until refreshed, so they are refreshed on a schedule. `CONCURRENTLY` avoids
-blocking dashboard queries.*
+blocking dashboard queries. Query A is CPU-bound (hashing for `count(DISTINCT)`),
+not disk-bound, so its cold and warm times are nearly identical and the gap is not
+a caching artifact. The ratio depends on table size (1,822,514 rows here). Refreshing
+costs ~12.3 s, about two reads of query A, so the tradeoff only pays off when
+dashboards are queried far more often than the view is refreshed. Use
+`ORDER BY hour DESC, event_type` on both sides to avoid tie-break differences.*
 
 ### Caveats
 - Single-laptop co-location is conservative; production partitioning and connection
